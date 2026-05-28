@@ -332,6 +332,20 @@ body { background:var(--gris-bg); color:var(--texto); font-family:var(--font-bod
     <div class="field"><label>Precio ARS</label><input type="number" id="prodPrecioARS" placeholder="0"></div>
     <div class="field"><label>Precio USD</label><input type="number" id="prodPrecioUSD" placeholder="0"></div>
     <div class="field"><label>Precio CLP</label><input type="number" id="prodPrecioCLP" placeholder="0 (opcional)"></div>
+    <div class="field"><label>Tipo</label>
+      <select id="prodTipo" onchange="toggleJuegoFields()">
+        <option value="simple">Neumático individual</option>
+        <option value="juego">Juego completo</option>
+      </select>
+    </div>
+    <div id="juegoFields" style="display:none">
+      <div class="field"><label>Neumático delantero</label>
+        <select id="prodDelantero"><option value="">— Seleccionar —</option></select>
+      </div>
+      <div class="field"><label>Neumático trasero</label>
+        <select id="prodTrasero"><option value="">— Seleccionar —</option></select>
+      </div>
+    </div>
     <div class="field"><label>Stock en bodega</label><input type="number" id="prodStockBodega" placeholder="0"></div>
     <div class="field"><label>Alerta cuando queden menos de</label><input type="number" id="prodStockAlerta" placeholder="3" value="3"></div>
     <button class="btn btn-rojo" id="btnGuardarProducto" onclick="crearProducto()">GUARDAR</button>
@@ -473,6 +487,19 @@ function renderMediosPago() {
     </div>`).join('');
 }
 
+function toggleJuegoFields() {
+  const tipo = document.getElementById('prodTipo').value;
+  const fields = document.getElementById('juegoFields');
+  fields.style.display = tipo === 'juego' ? 'block' : 'none';
+  if (tipo === 'juego') {
+    // Populate selects with simple neumaticos
+    const simples = catalogo.filter(p => p.tipo !== 'juego' && p.activo);
+    const opts = '<option value="">— Seleccionar —</option>' + simples.map(p => `<option value="${p.id}">${p.nombre}</option>`).join('');
+    document.getElementById('prodDelantero').innerHTML = opts;
+    document.getElementById('prodTrasero').innerHTML = opts;
+  }
+}
+
 function getMediosPago() {
   try { const s = localStorage.getItem('gp3_medios_pago'); if (s) return JSON.parse(s); } catch(e) {}
   return ['efectivo', 'transferencia', 'post de pago'];
@@ -567,12 +594,29 @@ async function registrarVenta() {
 
   // Update stock
   if (!error) {
+    // Update juego stock
     await db.from('neu_stock_eventos').upsert({
       evento_id: eventoActivo.id,
       producto_id: productoSeleccionado.id,
       cantidad: (productoSeleccionado.stock_evento || 0) - cantidad
     }, { onConflict: 'evento_id,producto_id' });
     await db.from('neu_productos').update({ stock_bodega: Math.max(0, (productoSeleccionado.stock_bodega || 0) - cantidad) }).eq('id', productoSeleccionado.id);
+
+    // If juego, also discount componentes
+    if (productoSeleccionado.tipo === 'juego') {
+      const componentes = [productoSeleccionado.componente_delantero, productoSeleccionado.componente_trasero].filter(Boolean);
+      for (const compId of componentes) {
+        const comp = catalogo.find(p => p.id === compId);
+        if (comp) {
+          await db.from('neu_stock_eventos').upsert({
+            evento_id: eventoActivo.id,
+            producto_id: compId,
+            cantidad: Math.max(0, (comp.stock_evento || 0) - cantidad)
+          }, { onConflict: 'evento_id,producto_id' });
+          await db.from('neu_productos').update({ stock_bodega: Math.max(0, (comp.stock_bodega || 0) - cantidad) }).eq('id', compId);
+        }
+      }
+    }
   }
 
   btn.disabled = false; btn.innerHTML = 'REGISTRAR VENTA';
@@ -583,7 +627,13 @@ async function registrarVenta() {
   ok.classList.add('show');
   setTimeout(() => ok.classList.remove('show'), 4000);
 
-  ultimaVenta = { producto: productoSeleccionado.nombre, cantidad, total, moneda: monedaSeleccionada, medio_pago: pagoSeleccionado, vendedor: perfilUsuario?.nombre };
+  let componentes = '';
+  if (productoSeleccionado.tipo === 'juego') {
+    const del = catalogo.find(p => p.id === productoSeleccionado.componente_delantero);
+    const tras = catalogo.find(p => p.id === productoSeleccionado.componente_trasero);
+    componentes = [del?.nombre, tras?.nombre].filter(Boolean).join(' + ');
+  }
+  ultimaVenta = { producto: productoSeleccionado.nombre, componentes, cantidad, total, moneda: monedaSeleccionada, medio_pago: pagoSeleccionado, vendedor: perfilUsuario?.nombre };
   mostrarTicket(ultimaVenta);
 
   productoSeleccionado = null; pagoSeleccionado = null;
@@ -889,15 +939,20 @@ async function crearProducto() {
   const clp = parseFloat(document.getElementById('prodPrecioCLP').value) || 0;
   const bodega = parseInt(document.getElementById('prodStockBodega').value) || 0;
   const alerta = parseInt(document.getElementById('prodStockAlerta').value) || 3;
+  const tipo = document.getElementById('prodTipo').value;
+  const delanteroId = document.getElementById('prodDelantero')?.value || null;
+  const traseroId = document.getElementById('prodTrasero')?.value || null;
   if (!nombre) { showErr('productoError','Ingresa el nombre del producto.'); return; }
+  if (tipo === 'juego' && (!delanteroId || !traseroId)) { showErr('productoError','Selecciona el delantero y trasero del juego.'); return; }
   const editId = document.getElementById('btnGuardarProducto').dataset.editId;
   let error;
+  const datos = { nombre, referencia:ref, precio_ars:ars, precio_usd:usd, precio_clp:clp, stock_bodega:bodega, stock_alerta:alerta, tipo, componente_delantero:delanteroId||null, componente_trasero:traseroId||null };
   if (editId) {
-    ({ error } = await db.from('neu_productos').update({ nombre, referencia:ref, precio_ars:ars, precio_usd:usd, precio_clp:clp, stock_bodega:bodega, stock_alerta:alerta }).eq('id', editId));
+    ({ error } = await db.from('neu_productos').update(datos).eq('id', editId));
   } else {
-    ({ error } = await db.from('neu_productos').insert({ nombre, referencia:ref, precio_ars:ars, precio_usd:usd, precio_clp:clp, stock_bodega:bodega, stock_alerta:alerta, activo:true }));
+    ({ error } = await db.from('neu_productos').insert({ ...datos, activo:true }));
   }
-  if (error) { showErr('productoError','Error al guardar.'); return; }
+  if (error) { showErr('productoError','Error al guardar: ' + error.message); return; }
   cerrarModal('modalProducto');
   cargarCatalogo(); cargarCatalogoAdmin();
 }
@@ -994,6 +1049,8 @@ function abrirModalProducto() {
   document.getElementById('prodPrecioCLP').value = '';
   document.getElementById('prodStockBodega').value = '';
   document.getElementById('prodStockAlerta').value = '3';
+  document.getElementById('prodTipo').value = 'simple';
+  document.getElementById('juegoFields').style.display = 'none';
   const btn = document.getElementById('btnGuardarProducto');
   btn.textContent = 'GUARDAR'; delete btn.dataset.editId;
   document.getElementById('modalProducto').classList.add('show');
