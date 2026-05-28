@@ -922,8 +922,19 @@ async function cargarCatalogoAdmin() {
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="btn btn-sm btn-gris" onclick="editarProducto('${p.id}')">✏️ EDITAR</button>
         <button class="btn btn-sm" style="background:rgba(232,0,29,0.1);color:var(--rojo);border:none;border-radius:6px;padding:6px 12px;cursor:pointer" onclick="toggleProducto('${p.id}',${!p.activo})">${p.activo?'⏸ DESACTIVAR':'▶ ACTIVAR'}</button>
+        <button class="btn btn-sm" style="background:rgba(232,0,29,0.15);color:var(--rojo);border:none;border-radius:6px;padding:6px 12px;cursor:pointer" onclick="borrarProducto('${p.id}')">🗑 BORRAR</button>
       </div>
     </div>`).join('');
+}
+
+async function borrarProducto(id) {
+  if (!confirm('¿Borrar este producto? Solo se puede borrar si no tiene ventas.')) return;
+  const { error } = await db.from('neu_productos').delete().eq('id', id);
+  if (error) {
+    alert('No se puede borrar — tiene ventas o es componente de un juego.');
+    return;
+  }
+  cargarCatalogo(); cargarCatalogoAdmin();
 }
 
 async function toggleProducto(id, activo) {
